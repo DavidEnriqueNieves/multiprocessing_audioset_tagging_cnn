@@ -1,4 +1,5 @@
 import numpy as np
+import json
 import csv
 
 sample_rate = 32000
@@ -17,13 +18,20 @@ for i1 in range(1, len(lines)):
     ids.append(id)
     labels.append(label)
 
-classes_num = len(labels)
-
 lb_to_ix = {label : i for i, label in enumerate(labels)}
 ix_to_lb = {i : label for i, label in enumerate(labels)}
+id_to_lb = {ids[i] : label for i, label in enumerate(labels)}
 
 id_to_ix = {id : i for i, id in enumerate(ids)}
 ix_to_id = {i : id for i, id in enumerate(ids)}
+
+# REALLY important for one-hot encoding
+labels.sort()
+
+classes_num = len(labels)
+
+print(f"{json.dumps(id_to_lb, indent=4)}")
+  
 
 full_samples_per_class = np.array([
         937432,  16344,   7822,  10271,   2043,  14420,    733,   1511,
