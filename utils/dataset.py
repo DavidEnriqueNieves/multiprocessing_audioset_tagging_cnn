@@ -149,12 +149,14 @@ def pack_split(split_start : int, split_end : int, meta_dict : dict, split_idx :
 
             hf['loaded_successfully'][:] = np.zeros((audios_num,), dtype=np.bool)
 
+            last_total : int = 0
             # Pack waveform & target of several audio clips to a single hdf5 file
             for n in iterator:
                 # print(f"{n=}")
                 human_labels : list = meta_dict['cum_hum_targets'][n]
                 # print(f"{meta_dict['cum_hum_targets'][n]=}")
 
+                success : bool = False
                 # print(f"{human_labels=}")
                 for label in human_labels:
                     audio_path : str = os.path.join(audios_dir, label + "/" + meta_dict['audio_name'][n] + ".wav")
@@ -171,6 +173,7 @@ def pack_split(split_start : int, split_end : int, meta_dict : dict, split_idx :
                             hf['target'][n] = meta_dict['target'][n]
                             hf['loaded_successfully'][n] = True
                             summary["successes"].append(audio_path)
+                            success = True
                             break
                         else:
                             # logging.info('{} File does not exist! {}'.format(n, audio_path))
@@ -178,14 +181,18 @@ def pack_split(split_start : int, split_end : int, meta_dict : dict, split_idx :
                     except Exception as e:
                         exceptions.append(str(e))
                 
-                if len(exceptions) == len(human_labels):
+                if success:
+                    summary["successes"].append(audio_path)
+                    hf['loaded_successfully'][n] = True
+                else:
                     summary["failures"][audio_path] = exceptions
                     hf['loaded_successfully'][n] = False
-                    # print(f"{exceptions=}")
-
+                
+                current_total : int = len(summary["successes"]) + len(summary["failures"])
                 with lock:
-                    pbar.update(1)
-                    pbar.set_postfix({'num_successes' : len(summary['successes']), 'num_failures' : len(summary['failures'])})
+                    pbar.update(current_total - last_total)
+                    pbar.set_postfix({'num_successes' : len(summary['successes']), 'num_failures' : len(summary['failures'].keys())})
+                    last_total = current_total
                 # print(f"{json.dumps(summary, indent=4)}")
         
                 if n % log_mod == 0:
