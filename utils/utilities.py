@@ -72,14 +72,15 @@ def read_metadata(csv_path, classes_num, id_to_ix):
 
     audios_num = len(lines)
     targets = np.zeros((audios_num, classes_num), dtype=np.bool)
-    audio_names = []
+    audio_path_info = []
     cum_hum_targets : list = []
+    indices : list = []
  
     for n, line in enumerate(lines):
         # using our custom delimiter
         items = line.split('|')
         # audio_anme is set to be the YTID, then start time, and the end time
-        audio_name = f'{items[1]}_{items[2]}_{items[3]}'   # Audios are started with an extra 'Y' when downloading
+        audio_path_tuple = (items[1],items[2],items[3])   # Audios are started with an extra 'Y' when downloading
         # print(f"{items=}")
         # print(items[4].split('"'))
         label_ids = items[4].replace("\"", "").replace("\n", "").split(",")
@@ -90,14 +91,15 @@ def read_metadata(csv_path, classes_num, id_to_ix):
         cum_hum_targets.append(labels_to_use)
         # print(f"{cum_hum_targets=}")
 
-        audio_names.append(audio_name)
+        audio_path_info.append(audio_path_tuple)
 
         # Target
         for id in label_ids:
             ix = id_to_ix[id]
             targets[n, ix] = 1
+        indices.append(items[0])
     
-    meta_dict = {'audio_name': np.array(audio_names), 'target': targets, 'cum_hum_targets' : cum_hum_targets}
+    meta_dict = {'audio_path_info': np.array(audio_path_info), 'target': targets, 'cum_hum_targets' : cum_hum_targets, 'indices' : indices}
     return meta_dict
 
 

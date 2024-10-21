@@ -1,4 +1,7 @@
 import numpy as np
+import pickle
+from pathlib import Path
+import re
 import argparse
 import csv
 import os
@@ -124,7 +127,49 @@ def download_wavs(args):
 
     logging.info('Logs can be viewed in {}'.format(logs_dir))
 
-def pack_split(split_start : int, split_end : int, meta_dict : dict, split_idx : int, waveforms_hdf5_path : str, audios_dir : str, log_mod : int, lock : mp.Lock):
+def filepath_to_info(filename):
+    # Existing pattern to extract YTID without changing it
+    ytid_pattern = r'^.*/([A-Za-z0-9_-]+?)(?=_[0-9]+(?:\.[0-9]+)?(?:[-_][0-9]+(?:\.[0-9]+)?)?\.wav$)'
+    ytid_match = re.match(ytid_pattern, filename)
+    
+    if ytid_match:
+        ytid = ytid_match.group(1)
+        
+        # Pattern to extract start_seconds
+        # Looks for an underscore followed by digits, possibly with a decimal
+        start_pattern = r'_(\d+(?:\.\d+)?)'
+        start_match = re.search(start_pattern, filename)
+        
+        if start_match:
+            start_seconds_str = start_match.group(1)
+        else:
+            print(f"Failed to extract start seconds from filename: {filename}")
+            return None
+        
+        # Pattern to extract end_seconds
+        # Looks for an underscore or hyphen followed by digits, possibly with a decimal, before '.wav'
+        end_pattern = r'[-_](\d+(?:\.\d+)?)\.wav$'
+        end_match = re.search(end_pattern, filename)
+        
+        if end_match:
+            end_seconds_str = end_match.group(1)
+        else:
+            print(f"Failed to extract end seconds from filename: {filename}")
+            return None
+        
+        try:
+            # Convert the extracted strings to integers (after converting to float to handle decimals)
+            start_seconds = float(start_seconds_str)
+            end_seconds = float(end_seconds_str)
+            return ytid, start_seconds, end_seconds
+        except ValueError:
+            print(f"Error converting times in file {filename}")
+            return None
+    else:
+        print(f"Failed to parse YTID from filename: {filename}")
+        return None
+
+def pack_split(split_start : int, split_end : int, meta_dict : dict, split_idx : int, waveforms_hdf5_path : str, slice_dict : dict, log_mod : int, lock : mp.Lock):
         summary : dict = {
             "successes" : [],
             "failures" : {}
@@ -134,16 +179,15 @@ def pack_split(split_start : int, split_end : int, meta_dict : dict, split_idx :
         classes_num = config.classes_num
         sample_rate = config.sample_rate
 
-        audios_num : int = len(meta_dict['audio_name'])
-        assert audios_num == len(meta_dict['target'])
-        assert audios_num == len(meta_dict['cum_hum_targets'])
+        audios_num : int = split_end - split_start
 
         iterator = range(split_start, split_end, 1)
-        pbar = tqdm(iterator, position=split_idx, desc=f"Split {split_idx}", leave=True)
+        pbar = tqdm(iterator, position=split_idx, desc=f"Split {split_idx}", leave=True, total=split_end - split_start)
         with h5py.File(waveforms_hdf5_path, 'w') as hf:
             hf.create_dataset('audio_name', shape=((audios_num,)), dtype='S20')
             hf.create_dataset('waveform', shape=((audios_num, clip_samples)), dtype=np.int16)
             hf.create_dataset('target', shape=((audios_num, classes_num)), dtype=np.bool)
+            hf.create_dataset('meta_csv_idx', shape=((audios_num,)), dtype=np.int32)
             hf.create_dataset('loaded_successfully', shape=((audios_num,)), dtype=np.bool)
             hf.attrs.create('sample_rate', data=sample_rate, dtype=np.int32)
 
@@ -151,42 +195,52 @@ def pack_split(split_start : int, split_end : int, meta_dict : dict, split_idx :
 
             last_total : int = 0
             # Pack waveform & target of several audio clips to a single hdf5 file
-            for n in iterator:
+
+            # i is used for the split index relative to the start, i.e. (0 - num_split_files),
+            #  and n is used for the index relative to the metadata CSV, i.e. (50k - 100k)
+            for i, n in enumerate(iterator):
                 # print(f"{n=}")
-                human_labels : list = meta_dict['cum_hum_targets'][n]
                 # print(f"{meta_dict['cum_hum_targets'][n]=}")
 
                 success : bool = False
                 # print(f"{human_labels=}")
-                for label in human_labels:
-                    audio_path : str = os.path.join(audios_dir, label + "/" + meta_dict['audio_name'][n] + ".wav")
-                    exceptions : list[str] = []
-                    try:
 
-                        if os.path.isfile(audio_path):
-                            # logging.info('{} {}'.format(n, audio_path))
+                path_info : tuple = meta_dict['audio_path_info'][n]
+                ytid, start_seconds, end_seconds = path_info
+
+                # print(f"{(ytid, start_seconds, end_seconds)=}")
+
+                if ytid in slice_dict:
+                    time_tuple : tuple = (float(start_seconds), float(end_seconds))
+
+                    if time_tuple in slice_dict[ytid]:
+                        audio_path : str = str(slice_dict[ytid][time_tuple])
+
+                        try:
                             (audio, _) = librosa.core.load(audio_path, sr=sample_rate, mono=True)
                             audio = pad_or_truncate(audio, clip_samples)
+                            # print(f"{meta_dict['indices'][n]=}, {meta_dict['audio_name'][n]=}")
 
-                            hf['audio_name'][n] = meta_dict['audio_name'][n].encode()
-                            hf['waveform'][n] = float32_to_int16(audio)
-                            hf['target'][n] = meta_dict['target'][n]
-                            hf['loaded_successfully'][n] = True
+                            hf['meta_csv_idx'][i] = meta_dict['indices'][n]
+                            hf['audio_name'][i] = str(audio_path)
+                            hf['waveform'][i] = float32_to_int16(audio)
+                            hf['target'][i] = meta_dict['target'][n]
+                            hf['loaded_successfully'][i] = True
                             summary["successes"].append(audio_path)
                             success = True
-                            break
-                        else:
-                            # logging.info('{} File does not exist! {}'.format(n, audio_path))
-                            exceptions.append(f"File {audio_path} does not exist!")
-                    except Exception as e:
-                        exceptions.append(str(e))
-                
-                if success:
-                    summary["successes"].append(audio_path)
-                    hf['loaded_successfully'][n] = True
+                        except Exception as e:
+                            exception : str = str(e)
+                    else:
+                        exception : str = f"Slice {(time_tuple)} {ytid} not even present inside of slice_dict (for tuple {path_info} )"
                 else:
-                    summary["failures"][audio_path] = exceptions
-                    hf['loaded_successfully'][n] = False
+                    exception : str = f"YTID {ytid} not even present inside of slice_dict (for tuple {path_info} )"
+
+                if success:
+                    summary["successes"].append(f"{path_info}-{audio_path}")
+                    hf['loaded_successfully'][i] = True
+                else:
+                    summary["failures"][str(path_info)] = exception
+                    hf['loaded_successfully'][i] = False
                 
                 current_total : int = len(summary["successes"]) + len(summary["failures"])
                 with lock:
@@ -237,23 +291,23 @@ def pack_waveforms_to_hdf5(args):
     logging.info('Write logs to {}'.format(logs_dir))
 
     # Read csv file
+    start : float = time.time()
     meta_dict = read_metadata(csv_path, classes_num, id_to_ix)
+    end : float = time.time()
+
+    print(f"Reading of metadata CSV took {end - start} seconds")
 
     if mini_data:
         mini_num = 10
         for key in meta_dict.keys():
             meta_dict[key] = meta_dict[key][0 : mini_num]
 
-    audios_num = len(meta_dict['audio_name'])
-
-    # Pack waveform to hdf5
-    total_time = time.time()
-
-    total_rows : int = len(meta_dict['audio_name'])
+    total_rows : int = len(meta_dict['audio_path_info'])
     assert total_rows == len(meta_dict['target'])
     assert total_rows == len(meta_dict['cum_hum_targets'])
 
     num_splits : int = 40
+    # num_splits : int = 2000
 
     rows_per_split : int = round(total_rows/num_splits)
     print(f"{rows_per_split}")
@@ -262,6 +316,7 @@ def pack_waveforms_to_hdf5(args):
 
     log_mod : int = 500
     processes : list[mp.Process] = []
+
 
     # split_idx : int = 0
     # with mp.Manager() as manager:
@@ -276,16 +331,33 @@ def pack_waveforms_to_hdf5(args):
     #         log_mod,
     #         lock,
     #     )
+    
+    audios_dict_path : str = "./nested_audios_dict.pkl"
+    if(os.path.exists(audios_dict_path)):
+        with open(audios_dict_path, "rb") as f:
+            print("Loading slice dictionary...")
+            slice_dict = pickle.load(f)
+            print(f"Slice dictionary loaded...")
+    else:
+        with open(audios_dict_path, "wb") as f:
+
+            print("Preprocessing slice dictionary...")
+            slice_dict : dict = get_preproc_dict(Path(audios_dir))
+            pickle.dump(slice_dict, f)
+
+    print(f"Number of keys for audios dir dictionary is {len(slice_dict.keys())}")
+
+    start : float = time.time()
 
     lock = mp.Lock()
     for split_idx in range(num_splits):
         range_start : int = split_idx * rows_per_split
         range_end : int = (split_idx + 1) * rows_per_split
-        print(f"{(range_start, range_end)=}")
+        # print(f"{(range_start, range_end)=}")
         # print(f"{[len(split_meta_dict[key]) for key in split_meta_dict]= }")
         # print(f"{[split_meta_dict[key][:10] for key in split_meta_dict]= }")
         
-        print(f"{split_idx=}")
+        # print(f"{split_idx=}")
         p = mp.Process(
             target=pack_split,
             args=(
@@ -294,13 +366,14 @@ def pack_waveforms_to_hdf5(args):
                 meta_dict ,
                 split_idx,
                 f"./hdf5s/audioset_{split_idx}.h5",
-                audios_dir,
+                slice_dict,
                 log_mod,
                 lock
                 )
         )
         p.start()
         processes.append(p)
+        # break
     
     try:
         for p in processes:
@@ -308,8 +381,32 @@ def pack_waveforms_to_hdf5(args):
     except KeyboardInterrupt as e:
         for p in processes:
             p.close()
+    
+    end : float = time.time()
+
+    print(f"Actual packing {end - start} seconds")
 
     print("done")
+
+def get_preproc_dict(audios_dir : Path):
+    start : float = time.time()
+    slice_dict : dict[str, dict[tuple, str]] = {}
+    for file in audios_dir.glob(f"*/*.wav"):
+        ytid, start_seconds, end_seconds = filepath_to_info(str(file))
+
+        if ytid not in slice_dict:
+            slice_dict[ytid] = {}
+        
+        # NOTE: start_seconds, and end_seconds are in the float type
+        slice_tuple : tuple = (start_seconds, end_seconds)
+        
+        if slice_tuple not in slice_dict[ytid]:
+            slice_dict[ytid][slice_tuple] = file
+
+    end : float = time.time()
+
+    print(f"Duration for preprocessing audios dir dictionary is {end - start}")
+    return slice_dict
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -374,8 +471,16 @@ if __name__ == "__main__":
         default=False,
         help="Set true to only download 10 audios for debugging.",
     )
+    parser_pack_wavs.add_argument( "--debug", action="store_true", help="Whether to launch things in debug mode")
 
     args = parser.parse_args()
+
+    if args.debug:
+        print(f"Debugpy launched")
+        import debugpy
+        PORT : int = 5678
+        debugpy.listen(PORT)
+        debugpy.wait_for_client()
 
     if args.mode == "split_unbalanced_csv_to_partial_csvs":
         split_unbalanced_csv_to_partial_csvs(args)
