@@ -81,8 +81,8 @@ def read_metadata(csv_path, classes_num, id_to_ix):
         items = line.split('|')
         # audio_anme is set to be the YTID, then start time, and the end time
         audio_path_tuple = (items[1],items[2],items[3])   # Audios are started with an extra 'Y' when downloading
-        # print(f"{items=}")
-        # print(items[4].split('"'))
+        print(f"{items=}")
+        print(items[4].split('"'))
         label_ids = items[4].replace("\"", "").replace("\n", "").split(",")
 
         labels_to_use : list = [id_to_lb[x] for x in label_ids]

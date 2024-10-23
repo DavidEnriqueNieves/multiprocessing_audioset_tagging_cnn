@@ -1,4 +1,5 @@
 import numpy as np
+from typing import Union
 import pickle
 from pathlib import Path
 import re
@@ -169,11 +170,14 @@ def filepath_to_info(filename):
         print(f"Failed to parse YTID from filename: {filename}")
         return None
 
-def pack_split(split_start : int, split_end : int, meta_dict : dict, split_idx : int, waveforms_hdf5_path : str, slice_dict : dict, log_mod : int, lock : mp.Lock):
+def pack_split(split_start : int, split_end : int, meta_dict : dict, split_idx : int, waveforms_hdf5_path : str, slice_dict : Union[set, dict], log_mod : int, lock : mp.Lock, flat : bool = False, flat_audio_dir : str = None):
         summary : dict = {
             "successes" : [],
             "failures" : {}
         }
+
+        if flat and flat_audio_dir == None:
+            raise ValueError("Invalid arguments provided since need to specify flat directory")
 
         clip_samples = config.clip_samples
         classes_num = config.classes_num
@@ -210,12 +214,39 @@ def pack_split(split_start : int, split_end : int, meta_dict : dict, split_idx :
 
                 # print(f"{(ytid, start_seconds, end_seconds)=}")
 
-                if ytid in slice_dict:
-                    time_tuple : tuple = (float(start_seconds), float(end_seconds))
+                # print(f"{flat=}")
+                if not flat:
+                    assert isinstance(slice_dict, dict), f"When using nested dirs, slice_dict should be a dictionary, is instead a {type(slice_dict)}"
+                    if ytid in slice_dict:
+                        time_tuple : tuple = (float(start_seconds), float(end_seconds))
 
-                    if time_tuple in slice_dict[ytid]:
-                        audio_path : str = str(slice_dict[ytid][time_tuple])
+                        if time_tuple in slice_dict[ytid]:
+                            audio_path : str = str(slice_dict[ytid][time_tuple])
 
+                            try:
+                                (audio, _) = librosa.core.load(audio_path, sr=sample_rate, mono=True)
+                                audio = pad_or_truncate(audio, clip_samples)
+                                # print(f"{meta_dict['indices'][n]=}, {meta_dict['audio_name'][n]=}")
+
+                                hf['meta_csv_idx'][i] = meta_dict['indices'][n]
+                                hf['audio_name'][i] = str(audio_path)
+                                hf['waveform'][i] = float32_to_int16(audio)
+                                hf['target'][i] = meta_dict['target'][n]
+                                hf['loaded_successfully'][i] = True
+                                summary["successes"].append(audio_path)
+                                success = True
+                            except Exception as e:
+                                exception : str = str(e)
+                        else:
+                            exception : str = f"Slice {(time_tuple)} {ytid} not even present inside of slice_dict (for tuple {path_info} )"
+                    else:
+                        exception : str = f"YTID {ytid} not even present inside of slice_dict (for tuple {path_info} )"
+                else:
+                    assert isinstance(slice_dict, set), f"When NOT using nested dirs, slice_dict should be set, is instead a {type(slice_dict)}"
+
+                    audio_name : str = f"Y{ytid}.wav" 
+                    if audio_name in slice_dict:
+                        audio_path : str = f"{flat_audio_dir}/{audio_name}"
                         try:
                             (audio, _) = librosa.core.load(audio_path, sr=sample_rate, mono=True)
                             audio = pad_or_truncate(audio, clip_samples)
@@ -231,14 +262,13 @@ def pack_split(split_start : int, split_end : int, meta_dict : dict, split_idx :
                         except Exception as e:
                             exception : str = str(e)
                     else:
-                        exception : str = f"Slice {(time_tuple)} {ytid} not even present inside of slice_dict (for tuple {path_info} )"
-                else:
-                    exception : str = f"YTID {ytid} not even present inside of slice_dict (for tuple {path_info} )"
+                        exception : str = f"Path {(audio_path)}  not even present inside of set (for tuple {path_info} )"
 
                 if success:
                     summary["successes"].append(f"{path_info}-{audio_path}")
                     hf['loaded_successfully'][i] = True
                 else:
+                    # print(f"{exception=}")
                     summary["failures"][str(path_info)] = exception
                     hf['loaded_successfully'][i] = False
                 
@@ -248,6 +278,9 @@ def pack_split(split_start : int, split_end : int, meta_dict : dict, split_idx :
                     pbar.set_postfix({'num_successes' : len(summary['successes']), 'num_failures' : len(summary['failures'].keys())})
                     last_total = current_total
                 # print(f"{json.dumps(summary, indent=4)}")
+
+                errors_path : Path = Path(f"./hdf5s/errors/errors_split_{split_idx}.json")
+                errors_path.parent.mkdir(exist_ok=True)
         
                 if n % log_mod == 0:
                     with open(f"./hdf5s/errors/errors_split_{split_idx}.json", "w") as f:
@@ -270,6 +303,7 @@ def pack_waveforms_to_hdf5(args):
     csv_path = args.csv_path
     waveforms_hdf5_path = args.waveforms_hdf5_path
     mini_data = args.mini_data
+    flat : bool = args.flat
 
     clip_samples = config.clip_samples
     classes_num = config.classes_num
@@ -306,7 +340,7 @@ def pack_waveforms_to_hdf5(args):
     assert total_rows == len(meta_dict['target'])
     assert total_rows == len(meta_dict['cum_hum_targets'])
 
-    num_splits : int = 40
+    num_splits : int = 1
     # num_splits : int = 2000
 
     rows_per_split : int = round(total_rows/num_splits)
@@ -332,22 +366,34 @@ def pack_waveforms_to_hdf5(args):
     #         lock,
     #     )
     
-    audios_dict_path : str = "./nested_audios_dict.pkl"
+    # NOTE: the object stored here may not necessarily be a dictionary in the case of a flat directory
+    audios_dict_path : str = "./eval_nested_audios_list.pkl"
+
     if(os.path.exists(audios_dict_path)):
         with open(audios_dict_path, "rb") as f:
             print("Loading slice dictionary...")
-            slice_dict = pickle.load(f)
+            slice_dict : Union[set, dict] = pickle.load(f)
             print(f"Slice dictionary loaded...")
+
+            if isinstance(slice_dict, dict):
+                print(f"Number of keys for audios dir dictionary is {len(slice_dict.keys())}")
+            elif isinstance(slice_dict, set):
+                print(f"Number of keys for audios dir dictionary is {len(slice_dict)}")
     else:
         with open(audios_dict_path, "wb") as f:
-
             print("Preprocessing slice dictionary...")
-            slice_dict : dict = get_preproc_dict(Path(audios_dir))
+
+            if flat:
+                slice_dict : set = get_preproc_set(Path(audios_dir))
+            else:
+                slice_dict : dict = get_preproc_dict(Path(audios_dir))
+
             pickle.dump(slice_dict, f)
 
-    print(f"Number of keys for audios dir dictionary is {len(slice_dict.keys())}")
-
     start : float = time.time()
+
+    print(f"{slice_dict=}")
+    # exit()
 
     lock = mp.Lock()
     for split_idx in range(num_splits):
@@ -365,10 +411,12 @@ def pack_waveforms_to_hdf5(args):
                 range_end ,
                 meta_dict ,
                 split_idx,
-                f"./hdf5s/audioset_{split_idx}.h5",
+                f"./eval_set.h5",
                 slice_dict,
                 log_mod,
-                lock
+                lock,
+                args.flat,
+                args.audios_dir
                 )
         )
         p.start()
@@ -388,7 +436,10 @@ def pack_waveforms_to_hdf5(args):
 
     print("done")
 
-def get_preproc_dict(audios_dir : Path):
+def get_preproc_dict(audios_dir : Path) -> dict:
+    """
+    for getting a nested directory dictionary of all files, assuming a nested directory structure
+    """
     start : float = time.time()
     slice_dict : dict[str, dict[tuple, str]] = {}
     for file in audios_dir.glob(f"*/*.wav"):
@@ -407,6 +458,23 @@ def get_preproc_dict(audios_dir : Path):
 
     print(f"Duration for preprocessing audios dir dictionary is {end - start}")
     return slice_dict
+
+def get_preproc_set(audios_dir : Path) -> set:
+    """
+    for getting a flat list of all files, assuming a flat directory structure
+    """
+    start : float = time.time()
+    files_set : list = []
+
+    for file in audios_dir.glob(f"*/*.wav"):
+        files_set.append(file.name)
+
+    end : float = time.time()
+
+    files_set = set(files_set)
+
+    print(f"Duration for preprocessing audios dir dictionary is {end - start}")
+    return files_set
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -472,6 +540,7 @@ if __name__ == "__main__":
         help="Set true to only download 10 audios for debugging.",
     )
     parser_pack_wavs.add_argument( "--debug", action="store_true", help="Whether to launch things in debug mode")
+    parser_pack_wavs.add_argument( "--flat", action="store_true", help="Whether the directory structure with all the wave files is nested", default=False)
 
     args = parser.parse_args()
 
@@ -481,6 +550,8 @@ if __name__ == "__main__":
         PORT : int = 5678
         debugpy.listen(PORT)
         debugpy.wait_for_client()
+
+    # print(f"{args.flat=}")
 
     if args.mode == "split_unbalanced_csv_to_partial_csvs":
         split_unbalanced_csv_to_partial_csvs(args)
