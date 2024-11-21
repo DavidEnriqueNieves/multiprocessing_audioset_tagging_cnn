@@ -190,12 +190,12 @@ def pack_split(split_start : int, split_end : int, meta_dict : dict, split_idx :
         with h5py.File(waveforms_hdf5_path, 'w') as hf:
             hf.create_dataset('audio_name', shape=((audios_num,)), dtype='S20')
             hf.create_dataset('waveform', shape=((audios_num, clip_samples)), dtype=np.int16)
-            hf.create_dataset('target', shape=((audios_num, classes_num)), dtype=np.bool)
+            hf.create_dataset('target', shape=((audios_num, classes_num)), dtype=bool)
             hf.create_dataset('meta_csv_idx', shape=((audios_num,)), dtype=np.int32)
-            hf.create_dataset('loaded_successfully', shape=((audios_num,)), dtype=np.bool)
+            hf.create_dataset('valid', shape=((audios_num,)), dtype=bool)
             hf.attrs.create('sample_rate', data=sample_rate, dtype=np.int32)
 
-            hf['loaded_successfully'][:] = np.zeros((audios_num,), dtype=np.bool)
+            hf['valid'][:] = np.zeros((audios_num,), dtype=bool)
 
             last_total : int = 0
             # Pack waveform & target of several audio clips to a single hdf5 file
@@ -232,7 +232,7 @@ def pack_split(split_start : int, split_end : int, meta_dict : dict, split_idx :
                                 hf['audio_name'][i] = str(audio_path)
                                 hf['waveform'][i] = float32_to_int16(audio)
                                 hf['target'][i] = meta_dict['target'][n]
-                                hf['loaded_successfully'][i] = True
+                                hf['valid'][i] = True
                                 summary["successes"].append(audio_path)
                                 success = True
                             except Exception as e:
@@ -256,7 +256,7 @@ def pack_split(split_start : int, split_end : int, meta_dict : dict, split_idx :
                             hf['audio_name'][i] = str(audio_path)
                             hf['waveform'][i] = float32_to_int16(audio)
                             hf['target'][i] = meta_dict['target'][n]
-                            hf['loaded_successfully'][i] = True
+                            hf['valid'][i] = True
                             summary["successes"].append(audio_path)
                             success = True
                         except Exception as e:
@@ -266,11 +266,11 @@ def pack_split(split_start : int, split_end : int, meta_dict : dict, split_idx :
 
                 if success:
                     summary["successes"].append(f"{path_info}-{audio_path}")
-                    hf['loaded_successfully'][i] = True
+                    hf['valid'][i] = True
                 else:
                     # print(f"{exception=}")
                     summary["failures"][str(path_info)] = exception
-                    hf['loaded_successfully'][i] = False
+                    hf['valid'][i] = False
                 
                 current_total : int = len(summary["successes"]) + len(summary["failures"])
                 with lock:
@@ -340,7 +340,7 @@ def pack_waveforms_to_hdf5(args):
     assert total_rows == len(meta_dict['target'])
     assert total_rows == len(meta_dict['cum_hum_targets'])
 
-    num_splits : int = 1
+    num_splits : int = 40
     # num_splits : int = 2000
 
     rows_per_split : int = round(total_rows/num_splits)
@@ -367,7 +367,7 @@ def pack_waveforms_to_hdf5(args):
     #     )
     
     # NOTE: the object stored here may not necessarily be a dictionary in the case of a flat directory
-    audios_dict_path : str = "./eval_nested_audios_list.pkl"
+    audios_dict_path : str = "./eval_nested_audios_list_fat.pkl"
 
     if(os.path.exists(audios_dict_path)):
         with open(audios_dict_path, "rb") as f:
@@ -392,7 +392,7 @@ def pack_waveforms_to_hdf5(args):
 
     start : float = time.time()
 
-    print(f"{slice_dict=}")
+    # print(f"{slice_dict=}")
     # exit()
 
     lock = mp.Lock()
@@ -411,7 +411,7 @@ def pack_waveforms_to_hdf5(args):
                 range_end ,
                 meta_dict ,
                 split_idx,
-                f"./eval_set.h5",
+                Path(waveforms_hdf5_path) / f"audioset_{split_idx}.h5",
                 slice_dict,
                 log_mod,
                 lock,
