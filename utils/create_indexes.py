@@ -1,4 +1,5 @@
 import numpy as np
+from pathlib import Path
 import argparse
 import csv
 import os
@@ -51,8 +52,8 @@ def combine_full_indexes(args):
 
     # Paths
     paths = get_sub_filepaths(indexes_hdf5s_dir)
-    paths = [path for path in paths if (
-        'train' in path and 'full_train' not in path and 'mini' not in path)]
+    # paths = [path for path in paths if (
+    #     'train' in path and 'full_train' not in path and 'mini' not in path)]
 
     print('Total {} hdf5 to combine.'.format(len(paths)))
 
@@ -70,7 +71,7 @@ def combine_full_indexes(args):
             dtype=np.bool)
 
         full_hf.create_dataset(
-            name='hdf5_path', 
+            name='hdf5_filenames', 
             shape=(0,), 
             maxshape=(None,), 
             dtype='S200')
@@ -81,40 +82,85 @@ def combine_full_indexes(args):
             maxshape=(None,), 
             dtype=np.int32)
 
-        for path in paths:
+        full_hf.create_dataset(
+            name='meta_csv_idx', 
+            shape=(0,), 
+            maxshape=(None,), 
+            dtype=np.int32)
+
+        full_hf.create_dataset(
+            name='valid', 
+            shape=(0), 
+            maxshape=(None,), 
+            dtype=np.bool)
+
+        for i, path in enumerate(paths):
             with h5py.File(path, 'r') as part_hf:
                 print(path)
-                n = len(full_hf['audio_name'][:])
-                new_n = n + len(part_hf['audio_name'][:])
+                n = full_hf['hdf5_filenames'].shape[0]
 
-                full_hf['audio_name'].resize((new_n,))
-                full_hf['audio_name'][n : new_n] = part_hf['audio_name'][:]
+                # Mask is for ONLY loading in successful files
+                mask : np.array = part_hf['valid']
+                target_arr : np.array = np.array(part_hf['target'])[mask]
+                new_n = n + target_arr.shape[0]
+
+                assert part_hf['target'].shape[0] == part_hf['waveform'].shape[0]
+                assert part_hf['meta_csv_idx'].shape[0] == part_hf['waveform'].shape[0]
+
+                assert full_hf['index_in_hdf5'].shape[0] == full_hf['target'].shape[0]
+                assert full_hf['hdf5_filenames'].shape[0] == full_hf['target'].shape[0]
+                assert full_hf['meta_csv_idx'].shape[0] == full_hf['target'].shape[0]
+
+                full_hf['hdf5_filenames'].resize((new_n,))
+                full_hf['hdf5_filenames'][n : new_n] = [Path(path).name for x in range(n, new_n)]
 
                 full_hf['target'].resize((new_n, classes_num))
-                full_hf['target'][n : new_n] = part_hf['target'][:]
+                full_hf['target'][n : new_n] = target_arr
 
-                full_hf['hdf5_path'].resize((new_n,))
-                full_hf['hdf5_path'][n : new_n] = part_hf['hdf5_path'][:]
+                target_argmax : np.array = np.argmax(target_arr)
+                full_seg_argmax : np.array = np.argmax(np.array(full_hf['target'][n : new_n])) 
+                assert target_argmax == full_seg_argmax, "These should be the same"
 
                 full_hf['index_in_hdf5'].resize((new_n,))
-                full_hf['index_in_hdf5'][n : new_n] = part_hf['index_in_hdf5'][:]
+                full_hf['index_in_hdf5'][n : new_n] = np.where(mask)[0]
+
+                meta_arr : np.array = np.array(part_hf['meta_csv_idx'])[mask]
+                full_hf['meta_csv_idx'].resize((new_n,))
+                full_hf['meta_csv_idx'][n : new_n] = meta_arr
+
+                load_arr : np.array = np.array(part_hf['valid'])[mask]
+                assert np.all(load_arr)
+                full_hf['valid'].resize((new_n,))
+                full_hf['valid'][n : new_n] = load_arr
+            
+                full_hf['target'].attrs['target_names'] = config.labels
                 
     print('Write combined full hdf5 to {}'.format(full_indexes_hdf5_path))
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+
     subparsers = parser.add_subparsers(dest='mode')
 
     parser_create_indexes = subparsers.add_parser('create_indexes')
     parser_create_indexes.add_argument('--waveforms_hdf5_path', type=str, required=True, help='Path of packed waveforms hdf5.')
     parser_create_indexes.add_argument('--indexes_hdf5_path', type=str, required=True, help='Path to write out indexes hdf5.')
+    parser_create_indexes.add_argument("--debug", action="store_true")
 
     parser_combine_full_indexes = subparsers.add_parser('combine_full_indexes')
     parser_combine_full_indexes.add_argument('--indexes_hdf5s_dir', type=str, required=True, help='Directory containing indexes hdf5s to be combined.')
     parser_combine_full_indexes.add_argument('--full_indexes_hdf5_path', type=str, required=True, help='Path to write out full indexes hdf5 file.')
+    parser_combine_full_indexes.add_argument("--debug", action="store_true")
 
     args = parser.parse_args()
+
+    if args.debug:
+        print("Debug mode enabled...")
+        import debugpy
+        PORT: int = 5678
+        debugpy.listen(PORT)
+        debugpy.wait_for_client()
     
     if args.mode == 'create_indexes':
         create_indexes(args)
