@@ -112,7 +112,7 @@ def filepath_to_info(filename) -> Tuple[str, float, float]:
 
 def pack_split(preproc_set: PreProcSet, split_idx : int, waveforms_hdf5_path : str, log_mod : int, lock : mp.Lock, meta_df: pd.DataFrame):
         summary : dict = {
-            "successes" : [],
+            "successes" : {},
             "failures" : {}
         }
 
@@ -155,24 +155,24 @@ def inner_pack_loop(preproc_set, split_idx, log_mod, lock, meta_df, summary, cli
                 # print(f"{human_labels=}")
     ytid, start_s, end_s = path_info        
                 # print(f"{flat=}")
-    if not preproc_set.flat:
-        if ytid in preproc_set.nested_dict:
-            time_tuple : tuple = (float(start_s), float(end_s))
+    # if not preproc_set.flat:
+    if ytid in preproc_set.nested_dict:
+        time_tuple : tuple = (float(start_s), float(end_s))
 
-            if time_tuple in preproc_set.nested_dict[ytid]:
-                success, exception, audio_path = handle_nested_dirs(preproc_set, meta_df, summary, clip_samples, classes_num, sample_rate, hf, i, ytid, time_tuple)
-            else:
-                exception : str = f"Slice {(time_tuple)} {ytid} not even present inside of slice_dict (for tuple {path_info} )"
+        if time_tuple in preproc_set.nested_dict[ytid]:
+            success, exception, audio_path = handle_nested_dirs(path_info, preproc_set, meta_df, summary, clip_samples, classes_num, sample_rate, hf, i, ytid, time_tuple)
         else:
-            exception : str = f"YTID {ytid} not even present inside of slice_dict (for {path_info} )"
-
-                # TODO: fix
-                # flat directory
+            exception : str = f"Slice {(time_tuple)} {ytid} not even present inside of slice_dict (for tuple {path_info} )"
     else:
-        success, exception, audio_path = handle_flat_dirs(summary, clip_samples, sample_rate, hf, i, path_info, ytid)
+        exception : str = f"YTID {ytid} not even present inside of slice_dict (for {path_info} )"
+
+    #             # TODO: fix
+    #             # flat directory
+    # else:
+    #     success, exception, audio_path = handle_flat_dirs(summary, clip_samples, sample_rate, hf, i, path_info, ytid)
 
     if success:
-        summary["successes"].append(f"{path_info}-{audio_path}")
+        summary["successes"][str(path_info)] = (f"{path_info}-{audio_path}")
         hf['valid'][i] = True
     else:
                     # print(f"{exception=}")
@@ -181,9 +181,6 @@ def inner_pack_loop(preproc_set, split_idx, log_mod, lock, meta_df, summary, cli
                 
     with lock:
         pbar.set_postfix({'num_successes' : len(summary['successes']), 'num_failures' : len(summary['failures'].keys())})
-        # pbar.update(current_total - last_total)
-        # last_total = current_total
-                # print(f"{json.dumps(summary, indent=4)}")
 
     errors_path : Path = Path(f"./hdf5s/errors/errors_split_{split_idx}.json")
     errors_path.parent.mkdir(exist_ok=True)
@@ -221,7 +218,7 @@ def handle_flat_dirs(summary, clip_samples, sample_rate, hf, i, path_info, ytid)
         raise RuntimeError(f"Exception while loading audio at path {audio_path}")
     return success,exception,audio_path
 
-def handle_nested_dirs(preproc_set, meta_df, summary, clip_samples, classes_num, sample_rate, hf, i, ytid, time_tuple) -> Tuple[bool, str, Path]:
+def handle_nested_dirs(path_info, preproc_set, meta_df, summary, clip_samples, classes_num, sample_rate, hf, i, ytid, time_tuple) -> Tuple[bool, str, Path]:
     path_w_meta: PathWMeta = preproc_set.nested_dict[ytid][time_tuple]
     exception: str = None
     success: bool = False
@@ -245,7 +242,6 @@ def handle_nested_dirs(preproc_set, meta_df, summary, clip_samples, classes_num,
 
             hf['target'][i] = target_arr
             hf['valid'][i] = True
-            summary["successes"].append(str(audio_path))
             success = True
         except Exception as e:
             # print out e 
@@ -341,6 +337,7 @@ def pack_waveforms_to_hdf5(args):
     print(f"{len(preproc_set.raw_keys)=}")
     preproc_splits: list[PreProcSet] = []
 
+    assert len(preproc_set.raw_list) == len(preproc_set.raw_keys)
     raw_list_splits: list[list[PathWMeta]] = np.array_split(preproc_set.raw_list, num_splits)
     raw_key_splits: list[list[Tuple[str, float, float]]] = np.array_split(preproc_set.raw_keys, num_splits)
 
@@ -348,6 +345,8 @@ def pack_waveforms_to_hdf5(args):
     print(f"True length for a split is: {len(raw_list_splits[0])}")
     print(f"Expected length for a split is: {int(total_rows / num_splits)}")
 
+    total_key_len: int = 0
+    total_list_split_len: int = 0
     for split_idx in range(num_splits):
         print(f"{len(raw_list_splits[split_idx])=}")
         split_preproc: PreProcSet = PreProcSet(
@@ -357,7 +356,12 @@ def pack_waveforms_to_hdf5(args):
             raw_key_splits[split_idx],
             flat=flat
             )
+        total_key_len += len(split_preproc.raw_keys)
+        total_list_split_len += len(split_preproc.raw_list)
         preproc_splits.append(split_preproc)
+    
+    assert total_key_len == total_list_split_len
+    print(f"{total_key_len=}, {total_list_split_len=}")
     
     print("done...")
 
@@ -372,7 +376,7 @@ def pack_waveforms_to_hdf5(args):
 
 
     lock = mp.Lock()
-    # pack_split(preproc_splits[0], 0, waveforms_hdf5_path, log_mod, lock, meta_df)
+    # # pack_split(preproc_splits[0], 0, waveforms_hdf5_path, log_mod, lock, meta_df)
     for split_idx in range(num_splits):
         split_filepath: Path = Path(waveforms_hdf5_path) / Path(f"audioset_{split_idx}.h5")    
         # print(f"{(range_start, range_end)=}")
@@ -402,9 +406,9 @@ def pack_waveforms_to_hdf5(args):
         for p in processes:
             p.close()
     
-    end : float = time.time()
+    # end : float = time.time()
 
-    print(f"Actual packing {end - start} seconds")
+    # print(f"Actual packing {end - start} seconds")
 
     print("done")
 
@@ -443,25 +447,37 @@ def get_preproc_dict(audios_dir: Path, meta_df: pd.DataFrame, flat: bool) -> Pre
 
     # first, get a nested dictionary to loop through
 
+    duplicates: list = []
     files_nest: dict = {}
     for path in tqdm(paths):    
         ytid, start_s, end_s = filepath_to_info(path.stem)
         if ytid not in files_nest:
             files_nest[ytid] = {}
-        files_nest[ytid][(start_s, end_s)] = path
-        all_files.append(path)
-        all_keys.append((ytid, start_s, end_s))
 
+        if (start_s, end_s) in files_nest[ytid]:
+            print(f"Duplicate {(ytid, start_s, end_s)}")
+            duplicates.append(path)
+            continue
+        else:
+            files_nest[ytid][(start_s, end_s)] = path
+            all_files.append(path)
+            all_keys.append((ytid, start_s, end_s))
+
+    print(f"Number of duplicates is {len(duplicates)}")
     all_files: list = list(set(all_files))
     all_keys: list = list(set(all_keys))
+    assert len(all_files) == len(all_keys)
 
     print("Creating subset of metadata CSV...")
     start: float = time.time()
 
+    # add the metadata information to the dictionary
     total_matches: int = 0
     recollected_keys: list[Tuple[str, float, float]] = []
     nested_dict: dict[str, dict[tuple, PathWMeta]] = {}
-    for i, row in tqdm(meta_df.iterrows(), total=len(meta_df)):
+
+    errors: list = []
+    for i, row in tqdm(meta_df.iterrows(), total=len(meta_df), leave=True):
         ytid: str = row['YTID']
         start_s: float = row['start_seconds']
         end_s: float = row['end_seconds']
@@ -477,15 +493,29 @@ def get_preproc_dict(audios_dir: Path, meta_df: pd.DataFrame, flat: bool) -> Pre
                 files_nest[ytid][(start_s, end_s)] = PathWMeta(files_nest[ytid][(start_s, end_s)], i, human_label_idxs)
                 recollected_keys.append((ytid, start_s, end_s))
                 total_matches+=1
+            else:
+                errors.append(f"YTID in files but start {start_s} and end {end_s} for that ID not in files")
+        else:
+            errors.append(f"YTID {ytid} not in files_nest")
+
+        
     end: float = time.time()    
 
     # get the missing keys
     missing_keys: list[Tuple[str, float, float]] = set(all_keys) - set(recollected_keys)
     print(f"{len(missing_keys)} missing keys")
     print(missing_keys)
+    print(f"Duration for creating subset of metadata CSV is {end - start}")
+    # print(f"Errors are \n\n{errors}\n")
 
     print(f"{len(all_keys) - total_matches} files missing from the metadata CSV")
     # assert total_matches == len(all_files), print(f"{total_matches=}, {len(all_files)=} should match!")   
+    if total_matches > len(all_files):
+        raise ValueError("More matches than files")
+    elif total_matches < len(all_files):
+        print("Difference in matches and files")
+        print(f"{len(all_files) - total_matches} files missing from the metadata CSV")
+        # raise ValueError("Less matches than files")
 
     # NOTE: we mainly care about all_keys, not necessarily all_files since there might be duplicates
     return PreProcSet(files_nest, str(audios_dir), all_files, raw_keys=all_keys, flat=flat)
