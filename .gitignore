@@ -8,3 +8,7 @@ __pycache__
 _logs
 *.pth
 paper_statistics
+hdf5s/*
+unbalanced_partial_csvs_dir/*
+*.pkl
+*.csv
