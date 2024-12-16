@@ -1,10 +1,19 @@
+"""
+Script to generate a csv file with the indices of the valid samples in the hdf5
+files, be they HDF5 files for packed audio or HDF5 files for packed mel
+spectrograms.
+"""
 from pathlib import Path
 import numpy as np
 import h5py
 import pandas as pd
 
-pack_hdf5s_dir: Path = Path("/datasets/AudioSet/pann_repo/hdf5s/pack_hdf5s/val")
-meta_csv_path: Path = Path("/datasets/AudioSet/pann_repo/hdf5s/index_hdf5s")
+pack_hdf5s_dir: Path = Path("/datasets/AudioSet/pann_repo/hdf5s/melspec_hdf5s_1.6m/val")
+meta_csv_path: Path = Path("/datasets/AudioSet/pann_repo/hdf5s/melspec_hdf5s_1.6m")
+
+def debug():
+    PORT: int = 5678
+    import debugpy
 
 if __name__ == "__main__":
 
@@ -29,6 +38,7 @@ if __name__ == "__main__":
         meta_df = pd.concat([meta_df, pd.DataFrame({
             "filename": audio_name,
             "audio_index": indices,
+            # "human_labels": 
         })])
 
         # break

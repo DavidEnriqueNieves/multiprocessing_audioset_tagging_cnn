@@ -58,40 +58,6 @@ class PreProcSet:
         # assert len(self.raw_list) == len(self.raw_keys)
         return len(self.raw_list)
 
-
-def split_unbalanced_csv_to_partial_csvs(args):
-    """Split unbalanced csv to part csvs. Each part csv contains up to 50000 ids. 
-    """
-    
-    unbalanced_csv_path = args.unbalanced_csv
-    unbalanced_partial_csvs_dir = args.unbalanced_partial_csvs_dir
-    
-    create_folder(unbalanced_partial_csvs_dir)
-    
-    with open(unbalanced_csv_path, 'r') as f:
-        lines = f.readlines()
-
-    lines = lines[3:]   # Remove head info
-    audios_num_per_file = 50000
-    
-    files_num = int(np.ceil(len(lines) / float(audios_num_per_file)))
-    
-    for r in range(files_num):
-        lines_per_file = lines[r * audios_num_per_file : 
-            (r + 1) * audios_num_per_file]
-        
-        out_csv_path = os.path.join(unbalanced_partial_csvs_dir, 
-            'unbalanced_train_segments_part{:02d}.csv'.format(r))
-
-        with open(out_csv_path, 'w') as f:
-            f.write('empty\n')
-            f.write('empty\n')
-            f.write('empty\n')
-            for line in lines_per_file:
-                f.write(line)
-        
-        print('Write out csv to {}'.format(out_csv_path))
-
 def filepath_to_info(filename) -> Tuple[str, float, float]:
     # youtube id is 11 chars long, followed by an underscore
 
@@ -133,6 +99,8 @@ def pack_split(preproc_set: PreProcSet, split_idx : int, waveforms_hdf5_path : s
             hf.create_dataset('target', shape=((audios_num, classes_num)), dtype=bool)
             hf.create_dataset('meta_csv_idx', shape=((audios_num,)), dtype=np.int32)
             hf.create_dataset('valid', shape=((audios_num,)), dtype=bool)
+
+            hf.attrs.create("feature_type", data="waveform", dtype="S20")
             hf.attrs.create('sample_rate', data=sample_rate, dtype=np.int32)
 
             hf['valid'][:] = np.zeros((audios_num,), dtype=bool)
@@ -225,19 +193,20 @@ def handle_nested_dirs(path_info, preproc_set, meta_df, summary, clip_samples, c
     if isinstance(path_w_meta, PathWMeta):
         audio_path: Path = path_w_meta.file_path
         meta_idx: int = path_w_meta.row_meta_idx
-        target: list[int] = path_w_meta.target
+        meta_target: list[int] = path_w_meta.target
         meta: pd.Series = meta_df.iloc[meta_idx]
 
         try:
             (audio, _) = librosa.core.load(str(audio_path), sr=sample_rate, mono=True)
             audio = pad_or_truncate(audio, clip_samples)
                                     # print(f"{meta_dict['indices'][n]=}, {meta_dict['audio_name'][n]=}")
-            hf['meta_csv_idx'][i] = meta.values[0]
+            hf['meta_csv_idx'][i] = meta["index"]
             hf['audio_name'][i] = str(audio_path)
             hf['waveform'][i] = float32_to_int16(audio)
             target_arr: np.array = np.zeros((classes_num,), dtype=bool)
 
-            for idx in target:
+            assert len(meta_target) > 0, "Metadata has no valid targets despite being valid"
+            for idx in meta_target:
                 target_arr[idx] = 1
 
             hf['target'][i] = target_arr
@@ -541,40 +510,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="mode")
 
-    parser_split = subparsers.add_parser("split_unbalanced_csv_to_partial_csvs")
-    parser_split.add_argument(
-        "--unbalanced_csv",
-        type=str,
-        required=True,
-        help="Path of unbalanced_csv file to read.",
-    )
-    parser_split.add_argument(
-        "--unbalanced_partial_csvs_dir",
-        type=str,
-        required=True,
-        help="Directory to save out split unbalanced partial csv.",
-    )
-
-    parser_download_wavs = subparsers.add_parser("download_wavs")
-    parser_download_wavs.add_argument(
-        "--csv_path",
-        type=str,
-        required=True,
-        help="Path of csv file containing audio info to be downloaded.",
-    )
-    parser_download_wavs.add_argument(
-        "--audios_dir",
-        type=str,
-        required=True,
-        help="Directory to save out downloaded audio.",
-    )
-    parser_download_wavs.add_argument(
-        "--mini_data",
-        action="store_true",
-        default=True,
-        help="Set true to only download 10 audios for debugging.",
-    )
-
     parser_pack_wavs = subparsers.add_parser("pack_waveforms_to_hdf5")
     parser_pack_wavs.add_argument(
         "--csv_path",
@@ -594,12 +529,6 @@ if __name__ == "__main__":
         required=True,
         help="Path to save out packed hdf5.",
     )
-    parser_pack_wavs.add_argument(
-        "--mini_data",
-        action="store_true",
-        default=False,
-        help="Set true to only download 10 audios for debugging.",
-    )
     parser_pack_wavs.add_argument( "--debug", action="store_true", help="Whether to launch things in debug mode")
     parser_pack_wavs.add_argument( "--flat", action="store_true", help="Whether the directory structure with all the wave files is nested", default=False)
 
@@ -613,14 +542,7 @@ if __name__ == "__main__":
         debugpy.wait_for_client()
 
     # print(f"{args.flat=}")
-
-    if args.mode == "split_unbalanced_csv_to_partial_csvs":
-        split_unbalanced_csv_to_partial_csvs(args)
-
-    # elif args.mode == "download_wavs":
-    #     download_wavs(args)
-
-    elif args.mode == "pack_waveforms_to_hdf5":
+    if args.mode == "pack_waveforms_to_hdf5":
         pack_waveforms_to_hdf5(args)
 
     else:
